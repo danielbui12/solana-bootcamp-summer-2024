@@ -1,6 +1,11 @@
-import { KeypairSigner, Keypair } from "@metaplex-foundation/umi";
+import { Keypair, PublicKey, Signer } from '@solana/web3.js';
 
 export interface CreateFnParam {
-  payerWalletSigner: KeypairSigner;
-  payerWallet: Keypair;
+  payer: Keypair;
+  mint: Keypair;
+}
+
+export interface MintFnParam {
+  mint: PublicKey;
+  payer: Signer;
 }

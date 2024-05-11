@@ -1,92 +1,172 @@
-import { TokenStandard, createAndMint, createNft } from '@metaplex-foundation/mpl-token-metadata'
-import { createUmi } from '@metaplex-foundation/umi-bundle-defaults';
-import { mplCandyMachine } from "@metaplex-foundation/mpl-candy-machine";
-import { payer } from "@/lib/vars";
-import "@solana/web3.js";
-import { PublicKey } from '@solana/web3.js';
-import { createSignerFromKeypair, generateSigner, percentAmount, signerIdentity } from '@metaplex-foundation/umi';
-import { CreateFnParam } from './type';
-import { explorerURL, printConsoleSeparator } from './lib/helpers';
+import { STATIC_PUBLICKEY, payer } from "@/lib/vars";
+import { Connection, Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { CreateFnParam, MintFnParam } from './type';
+import { explorerURL } from './lib/helpers';
+import { MINT_SIZE, createAssociatedTokenAccountInstruction, createInitializeMint2Instruction, createMintToInstruction, getAssociatedTokenAddressSync, getMinimumBalanceForRentExemptMint } from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { createCreateMetadataAccountV3Instruction, PROGRAM_ID as METADATA_PROGRAM_ID } from "@metaplex-foundation/mpl-token-metadata";
+import { Metaplex, keypairIdentity, bundlrStorage } from "@metaplex-foundation/js";
 
-const umi = createUmi('https://api.devnet.solana.com');
-umi.use(mplCandyMachine());
+const connection = new Connection('https://api.devnet.solana.com');
 
 async function main() {
-  const payerWallet = umi.eddsa.createKeypairFromSecretKey(payer.secretKey);
-  const payerWalletSigner = createSignerFromKeypair(umi, payerWallet);
   // create new mint
-  const tokenMint = await createNewToken({ payerWalletSigner, payerWallet });
-  const nftMint = await createNewNft({ payerWalletSigner, payerWallet });
-  printConsoleSeparator('mint PublicKey');
-  console.log('tokenMint: ', tokenMint.toString());
-  console.log('nftMint: ', nftMint.toString());
+  const nftMint = Keypair.generate();
+  await createNewNft({ payer, mint: nftMint });
+  console.log('nftMint', nftMint.publicKey.toBase58());
+
+  const tokenMint = Keypair.generate();
+  const createTokenMintIx = await createNewToken({ payer, mint: tokenMint });
+  console.log('tokenMint', tokenMint.publicKey.toBase58());
 
   // mint to
+  const mintToIx = createMintTokenInstruction({
+    mint: new PublicKey(tokenMint.publicKey),
+    payer,
+  });
 
+  // create tx
+  const ixs = [...createTokenMintIx, ...mintToIx] as TransactionInstruction[];  
+  const tx = new Transaction()
+    .add(...ixs)
+
+  console.log('Sending tx...');
+  await sendAndConfirmTransaction(connection, tx, [payer, tokenMint], { commitment: 'finalized' })
+    .then((sig) => {
+      explorerURL({ txSignature: sig });
+    })
+    .catch((err) => {
+      console.log(err);
+    });
 }
 
-async function createNewToken({ payerWalletSigner, payerWallet }: CreateFnParam): Promise<PublicKey> {
+async function createNewNft({ payer, mint }: CreateFnParam) {
+  const nftMetadta = require('@/assets/nftMetadata.json');
+  const metaplex = Metaplex.make(connection)
+    .use(keypairIdentity(payer))
+    .use(
+      bundlrStorage({
+        address: "https://devnet.bundlr.network",
+        providerUrl: "https://api.devnet.solana.com",
+        timeout: 60000,
+      }),
+    );
+
+  console.log("Uploading metadata...");
+  const { uri } = await metaplex.nfts().uploadMetadata(nftMetadta);
+  console.log("Metadata uploaded:", uri);
+  const { nft, response } = await metaplex.nfts().create(
+    {
+      name: nftMetadta.name,
+      symbol: nftMetadta.symbol,
+      sellerFeeBasisPoints: nftMetadta.sellerFeeBasisPoints,
+      uri: uri,
+      useNewMint: mint,
+      isMutable: false,
+    },
+    { commitment: "finalized" }
+  );
+  console.log(explorerURL({ txSignature: response.signature }));
+}
+
+async function createNewToken({ payer, mint }: CreateFnParam): Promise<TransactionInstruction[]> {
   const tokenConfig = {
     name: "Daniel Token",
     symbol: "DT",
     uri: "https://raw.githubusercontent.com/danielbui12/solana-bootcamp-summer-2024/main/week-1/assignment/assets/tokenMetadata.json",
     decimals: 6,
   };
-  const mint = generateSigner(umi);
-  umi.use(signerIdentity(payerWalletSigner));
 
-  const tx = await createAndMint(umi, {
+  const lamports = await getMinimumBalanceForRentExemptMint(connection);
+  return [
+    SystemProgram.createAccount({
+      fromPubkey: payer.publicKey,
+      newAccountPubkey: mint.publicKey,
+      space: MINT_SIZE,
+      lamports,
+      programId: TOKEN_PROGRAM_ID
+    }),
+    createInitializeMint2Instruction(
+      mint.publicKey,
+      tokenConfig.decimals,
+      payer.publicKey,
+      payer.publicKey,
+      TOKEN_PROGRAM_ID,
+    ),
+    createCreateMetadataAccountV3Instruction({
+      metadata: PublicKey.findProgramAddressSync(
+        [
+          Buffer.from('metadata'),
+          METADATA_PROGRAM_ID.toBuffer(),
+          mint.publicKey.toBuffer(),
+        ],
+        METADATA_PROGRAM_ID
+      )[0],
+      mint: mint.publicKey,
+      mintAuthority: payer.publicKey,
+      payer: payer.publicKey,
+      updateAuthority: payer.publicKey,
+    },
+    {
+      createMetadataAccountArgsV3: {
+        data: {
+          name: tokenConfig.name,
+          symbol: tokenConfig.symbol,
+          uri: tokenConfig.uri,
+          creators: null,
+          sellerFeeBasisPoints: 0,
+          uses: null,
+          collection: null,
+        },
+        isMutable: false,
+        collectionDetails: null,
+      },
+    })
+  ];
+}
+
+function createMintTokenInstruction({ mint, payer }: MintFnParam): TransactionInstruction[] {
+  // get or create the token's ata
+  const payerAssociatedToken = getAssociatedTokenAddressSync(
     mint,
-    authority: umi.identity,
-    name: tokenConfig.name,
-    symbol: tokenConfig.symbol,
-    uri: tokenConfig.uri,
-    sellerFeeBasisPoints: percentAmount(0),
-    decimals: tokenConfig.decimals,
-    tokenOwner: payerWallet.publicKey as any,
-    tokenStandard: TokenStandard.Fungible,
-  }).sendAndConfirm(umi);
-  printConsoleSeparator('Sending create token tx...');
-  if (tx.result.value.err) {
-    console.log("Transaction failed: ", tx.result.value.err);
-    throw new Error('Transaction failed');
-  }
-  // print the explorer url
-  console.log("Transaction completed.");
-  console.log(explorerURL({ txSignature: tx.signature.toString() }));
-  return new PublicKey(mint.publicKey);
-}
-
-async function createNewNft({ payerWalletSigner, payerWallet }: CreateFnParam): Promise<PublicKey> {
-  const metadata = {
-    name: "Daniel NFT",
-    symbol: "DNFT",
-    uri: "https://raw.githubusercontent.com/danielbui12/solana-bootcamp-summer-2024/main/week-1/assignment/assets/nftMetadata.json",
-  };
-  const mint = generateSigner(umi);
-  umi.use(signerIdentity(payerWalletSigner));
-
-  const tx = await createNft(umi, {
+    payer.publicKey,
+  );
+  const createPayerTokenAccountIx = createAssociatedTokenAccountInstruction(
+    payer.publicKey,
+    payerAssociatedToken,
+    payer.publicKey,
     mint,
-    authority: umi.identity,
-    name: metadata.name,
-    symbol: metadata.symbol,
-    uri: metadata.uri,
-    tokenOwner: payerWallet.publicKey as any,
-    sellerFeeBasisPoints: percentAmount(1000), // Represents 10.00%.
-  }).sendAndConfirm(umi);
+  )
+  console.log("Payer token account address:", payerAssociatedToken.toBase58());
 
-  printConsoleSeparator('Sending create NFT tx...');
-  if (tx.result.value.err) {
-    console.log("Transaction failed: ", tx.result.value.err);
-    throw new Error('Transaction failed');
-  }
-  // print the explorer url
-  console.log("Transaction completed.");
-  console.log(explorerURL({ txSignature: tx.signature.toString() }));
-  return new PublicKey(mint.publicKey);
+  const staticWalletAssociatedToken = getAssociatedTokenAddressSync(
+    mint,
+    STATIC_PUBLICKEY,
+  );
+  const createStaticWalletTokenAccountIx = createAssociatedTokenAccountInstruction(
+    payer.publicKey,
+    staticWalletAssociatedToken,
+    STATIC_PUBLICKEY,
+    mint,
+  )
+  console.log("Static token account address:", staticWalletAssociatedToken.toBase58());
+
+  return [
+    createPayerTokenAccountIx,
+    createStaticWalletTokenAccountIx,
+    createMintToInstruction(
+      mint,
+      payerAssociatedToken,
+      payer.publicKey,
+      100_000_000, // 100 * 10**6
+    ),
+    createMintToInstruction(
+      mint,
+      staticWalletAssociatedToken,
+      payer.publicKey,
+      10_000_000, // 10 * 10**6
+    ),
+  ];
 }
 
-async function mintToken() {
-}
 main();

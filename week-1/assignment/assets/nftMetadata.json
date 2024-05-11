@@ -2,5 +2,9 @@
   "name": "Daniel NFT",
   "symbol": "DNFT",
   "description": "Daniel NFT in Solana Bootcamp Summer 2024",
-  "image": "https://avatars.githubusercontent.com/u/79790753"
+  "image": "https://avatars.githubusercontent.com/u/79790753",
+  "attributes": [
+    { "trait_type": "Avatar", "value": "Daniel" }
+  ],
+  "sellerFeeBasisPoints": 1000
 }
