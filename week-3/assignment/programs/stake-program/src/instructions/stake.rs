@@ -18,7 +18,11 @@ pub struct Stake<'info> {
     #[account(
         init_if_needed,
         payer = staker,
-        seeds = [STAKE_INFO_SEED, staker.key().as_ref()], // What if a user wants to stake multiple types of tokens?        
+        seeds = [
+            STAKE_INFO_SEED,
+            staker.key().as_ref(),
+            mint.key().as_ref()
+        ],
         bump,
         space = 8 + StakeInfo::INIT_SPACE
     )]
@@ -62,6 +66,7 @@ pub fn stake(ctx: Context<Stake>, amount: u64) -> Result<()> {
     stake_info.stake_at = clock.slot;
     stake_info.is_staked = true;
     stake_info.amount = amount;
+    stake_info.bump = ctx.bumps.stake_info;
 
     // transfer token to vault
     transfer(

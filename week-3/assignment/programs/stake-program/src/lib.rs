@@ -6,7 +6,7 @@ mod errors;
 mod instructions;
 mod state;
 
-declare_id!("5ZH5NAc5AeWpYW5MgxDgsHSPjzBYmN6qbn1dSwTYBj6X");
+declare_id!("Dwdm6dTSfQeBFFi8mYeNLzZ8njhyQ6Hb8VQSeQEPBzu1");
 
 #[program]
 pub mod stake_program {
@@ -20,7 +20,7 @@ pub mod stake_program {
         instructions::stake(ctx, amount)
     }
 
-    pub fn unstake(ctx: Context<Unstake>) -> Result<()> {
-        instructions::unstake(ctx)
+    pub fn unstake(ctx: Context<Unstake>, amount: u64) -> Result<()> {
+        instructions::unstake(ctx, amount)
     }
 }
